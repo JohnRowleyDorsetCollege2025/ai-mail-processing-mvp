@@ -1,0 +1,56 @@
+### Requests for VS Code REST Client / Rider / Visual Studio. Start all three APIs first (see README).
+
+@ingest = http://localhost:5100
+@receiver = http://localhost:5200
+@generator = http://localhost:5300
+
+### Generator: list trades, request types and attachment types
+GET {{generator}}/api/samples/options
+
+### Generator: download a sample .eml (omit seed for a random one)
+GET {{generator}}/api/samples/email?seed=2026
+
+### Generator: sample .eml with overrides
+POST {{generator}}/api/samples/email
+Content-Type: application/json
+
+{
+  "scenario": { "seed": 99, "requestType": "Renewal", "trade": "Hotel", "claimCount": 2 },
+  "attachments": ["submission-pdf"]
+}
+
+### Generator: ground-truth facts for a seed (what the AI should extract)
+POST {{generator}}/api/samples/scenario
+Content-Type: application/json
+
+{ "scenario": { "seed": 99, "requestType": "Renewal", "trade": "Hotel", "claimCount": 2 } }
+
+### End to end: generate -> ingest -> AI receiver
+POST {{generator}}/api/samples/email/submit
+Content-Type: application/json
+
+{ "scenario": { "trade": "Restaurant / Takeaway" }, "mailbox": "traded" }
+
+### Ingest: preview the AI payload for an .eml on disk (no forwarding)
+POST {{ingest}}/api/submissions/preview?mailbox=traded
+Content-Type: message/rfc822
+
+< ./data/sample.eml
+
+### Ingest: upload an .eml as multipart and forward it
+POST {{ingest}}/api/submissions
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="mailbox"
+
+traded
+--boundary
+Content-Disposition: form-data; name="file"; filename="sample.eml"
+Content-Type: message/rfc822
+
+< ./data/sample.eml
+--boundary--
+
+### Receiver: what has arrived (in-memory, last 100)
+GET {{receiver}}/api/ai/submissions

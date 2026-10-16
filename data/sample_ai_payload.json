@@ -1,0 +1,25 @@
+{
+  "agent_ids": [
+    "<AURA agent id>"
+  ],
+  "content": "SUBMISSION\nSubmission-Id: 3f2a...\nMailbox: traded\nFrom: Laura Lennon <lauralennon@arachas.ie>\nTo: Allianz Commercial Quotes\nDate: 2026-10-13T12:09:00Z\nSubject: Submission - Landcam Ltd T/As Supermacs & Papa Johns - Renewal\nAttachments (2): SULI10 Insurance Submission 2026_09.09.26_Renewal 2026.pdf; Claims Experience.pdf\n\nEMAIL BODY\nHi team,\nPlease see attached a commercial combined submission for Landcam Ltd ...",
+  "context": {
+    "submissionId": "3f2a...",
+    "mailbox": "traded",
+    "receivedOn": "2026-10-13T12:09:00Z",
+    "attachmentCount": 2
+  },
+  "attached_documents": [
+    {
+      "file_name": "SULI10 Insurance Submission 2026_09.09.26_Renewal 2026.pdf",
+      "mime_type": "application/pdf",
+      "content": "<base64>"
+    },
+    {
+      "file_name": "Claims Experience.pdf",
+      "mime_type": "application/pdf",
+      "content": "<base64>"
+    }
+  ],
+  "async_processing": true
+}

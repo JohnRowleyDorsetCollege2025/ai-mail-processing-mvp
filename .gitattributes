@@ -1,0 +1,9 @@
+# Normalise line endings to LF in the repo; checkout follows the platform.
+* text=auto
+
+# Keep raw email test data byte-for-byte (MIME parsing is sensitive to line endings).
+*.eml -text
+
+*.pdf binary
+*.docx binary
+*.png binary

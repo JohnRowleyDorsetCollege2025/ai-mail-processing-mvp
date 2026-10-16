@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Aura.AiReceiver.Api/Aura.AiReceiver.Api.csproj" />
+    <Project Path="src/Aura.Contracts/Aura.Contracts.csproj" />
+    <Project Path="src/Aura.MailIngest.Api/Aura.MailIngest.Api.csproj" />
+    <Project Path="src/Aura.SampleMailGenerator.Api/Aura.SampleMailGenerator.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Aura.MailIngest.Tests/Aura.MailIngest.Tests.csproj" />
+  </Folder>
+</Solution>
