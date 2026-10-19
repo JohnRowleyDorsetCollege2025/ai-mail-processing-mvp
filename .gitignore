@@ -487,3 +487,9 @@ appsettings.*.local.json
 appsettings.Local.json
 .env
 .env.*
+
+# Dev/demo SQLite database of received emails (may contain client data once real emails are used)
+App_Data/
+*.db
+*.db-shm
+*.db-wal

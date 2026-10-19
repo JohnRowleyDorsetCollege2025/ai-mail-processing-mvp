@@ -52,5 +52,15 @@ Content-Type: message/rfc822
 < ./data/sample.eml
 --boundary--
 
+### Ingest: stored submissions (status: Pending | Accepted | Failed)
+GET {{ingest}}/api/submissions?take=20
+
+### Ingest: one stored submission (paste an id from the list)
+@submissionId = paste-id-here
+GET {{ingest}}/api/submissions/{{submissionId}}
+
+### Ingest: download the original .eml
+GET {{ingest}}/api/submissions/{{submissionId}}/eml
+
 ### Receiver: what has arrived (in-memory, last 100)
 GET {{receiver}}/api/ai/submissions

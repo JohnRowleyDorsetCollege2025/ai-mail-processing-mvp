@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Aura.Contracts;
 using Aura.MailIngest.Api;
+using Aura.MailIngest.Api.Storage;
 using Aura.SampleMailGenerator.Api;
 using Aura.SampleMailGenerator.Api.Attachments;
 using Aura.SampleMailGenerator.Api.Scenarios;
@@ -13,8 +14,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Aura.MailIngest.Tests;
 
-public class MailIngestApiTests
+public class MailIngestApiTests : IDisposable
 {
+    // Each test class instance gets its own throwaway database.
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aura-ingest-tests-{Guid.NewGuid():N}.db");
+
     [Fact]
     public async Task Multipart_upload_is_parsed_and_forwarded_to_ai_receiver()
     {
@@ -83,11 +87,79 @@ public class MailIngestApiTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
-    private static HttpClient CreateClient(StubReceiver receiver)
+    [Fact]
+    public async Task Forwarded_submission_is_stored_and_original_eml_is_downloadable()
+    {
+        using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
+        var eml = GenerateEml();
+
+        var response = await client.PostAsync("/api/submissions", RawEml(eml));
+        var submissionId = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("submissionId").GetString();
+
+        var list = await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions);
+        var stored = Assert.Single(list!);
+        Assert.Equal(submissionId, stored.SubmissionId);
+        Assert.Equal(SubmissionStatus.Accepted, stored.Status);
+        Assert.NotNull(stored.ForwardedAtUtc);
+        Assert.StartsWith("Submission - ", stored.Subject);
+        Assert.EndsWith(".pdf", stored.AttachmentNames);
+
+        var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{submissionId}", JsonOptions);
+        Assert.StartsWith("SUBMISSION\n", detail!.Content);
+
+        Assert.Equal(eml, await client.GetByteArrayAsync($"/api/submissions/{submissionId}/eml"));
+    }
+
+    [Fact]
+    public async Task Failed_forward_is_stored_with_error()
+    {
+        using var client = CreateClient(new StubReceiver(HttpStatusCode.InternalServerError));
+        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
+
+        var failed = await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions?status=Failed", JsonOptions);
+        var stored = Assert.Single(failed!);
+        Assert.Equal(SubmissionStatus.Failed, stored.Status);
+        Assert.Contains("500", stored.Error);
+        Assert.Empty((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions?status=Accepted", JsonOptions))!);
+    }
+
+    [Fact]
+    public async Task Preview_is_not_stored_and_unknown_id_returns_not_found()
+    {
+        using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
+        await client.PostAsync("/api/submissions/preview", RawEml(GenerateEml()));
+
+        Assert.Empty((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/submissions/does-not-exist")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/submissions/does-not-exist/eml")).StatusCode);
+    }
+
+    public void Dispose()
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        File.Delete(_databasePath);
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+    };
+
+    private static ByteArrayContent RawEml(byte[] eml)
+    {
+        var content = new ByteArrayContent(eml);
+        content.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
+        return content;
+    }
+
+    private HttpClient CreateClient(StubReceiver receiver)
     {
         var factory = new WebApplicationFactory<EmlSubmissionParser>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Storage:DatabasePath", _databasePath);
             builder.ConfigureTestServices(services =>
-                services.AddHttpClient<AiReceiverClient>().ConfigurePrimaryHttpMessageHandler(() => receiver)));
+                services.AddHttpClient<AiReceiverClient>().ConfigurePrimaryHttpMessageHandler(() => receiver));
+        });
         return factory.CreateClient();
     }
 

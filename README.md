@@ -22,7 +22,7 @@ test submissions.
 Requires the .NET 10 SDK.
 
 ```sh
-dotnet test                                                     # 18 tests
+dotnet test                                                     # 21 tests
 dotnet run --project src/Aura.AiReceiver.Api &
 dotnet run --project src/Aura.MailIngest.Api &
 dotnet run --project src/Aura.SampleMailGenerator.Api &
@@ -39,7 +39,10 @@ curl -X POST localhost:5300/api/samples/email/submit -H 'content-type: applicati
 | Endpoint | Description |
 |---|---|
 | `POST /api/submissions` | Parse and forward. Returns `202` with the submission id and the receiver's acknowledgement, `400` for an invalid `.eml`, `502` if the receiver fails. |
-| `POST /api/submissions/preview` | Parse only; returns the payload that would be sent. |
+| `POST /api/submissions/preview` | Parse only; returns the payload that would be sent. Nothing is stored. |
+| `GET /api/submissions?status=&take=` | List stored submissions, most recent first. `status` is `Pending`, `Accepted` or `Failed`. |
+| `GET /api/submissions/{id}` | One stored submission, including the `content` text sent to the AI. |
+| `GET /api/submissions/{id}/eml` | Download the original `.eml` exactly as received. |
 
 The `.eml` can be sent either as `multipart/form-data` (field `file`, optional field `mailbox`) or as a raw
 `message/rfc822` body. `?mailbox=` overrides the default mailbox (`Ingest:DefaultMailbox`).
@@ -53,6 +56,16 @@ How the payload is built:
 - **`attached_documents`**: every attachment, base64-encoded. It also includes named non-image parts sent inline
   (some clients do this with PDFs) and attached emails (as `message/rfc822`). Inline images such as signature logos
   are skipped. `application/octet-stream` parts get their MIME type from the file extension.
+
+### Stored emails (development and demo only)
+
+Every email posted to `POST /api/submissions` is saved to a SQLite database before it's forwarded. Each row records
+the sender, subject, attachment names, the `content` text, the raw `.eml`, and the forwarding outcome: `Accepted`,
+or `Failed` with the error. If the receiver is down, the email is still kept for review.
+
+The database is `src/Aura.MailIngest.Api/App_Data/submissions.db` (`Storage:DatabasePath`). It's created on startup,
+has no migrations, and is ignored by git. Delete it to start afresh, or after changing the schema. This store is not
+intended for production.
 
 Configuration (`appsettings.json`): `Ingest:AgentIds` (sent as `agent_ids`), `Ingest:DefaultMailbox`,
 `Ingest:MaxEmlSizeBytes` (default 50 MB), `AiReceiver:BaseUrl`, `AiReceiver:SubmissionsPath` and `AiReceiver:TimeoutSeconds`.

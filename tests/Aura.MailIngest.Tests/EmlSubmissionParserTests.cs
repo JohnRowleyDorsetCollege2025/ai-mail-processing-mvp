@@ -18,7 +18,7 @@ public class EmlSubmissionParserTests
         var scenario = new ScenarioGenerator(TimeProvider.System).Generate(new ScenarioRequest { Seed = 42, RequestType = "Renewal" });
         var message = new SampleEmailBuilder([new SubmissionPdfGenerator()], TimeProvider.System).Build(scenario);
 
-        var payload = await _parser.ParseAsync(ToStream(message), "traded", AgentIds);
+        var payload = (await _parser.ParseAsync(ToStream(message), "traded", AgentIds)).Payload;
 
         Assert.Equal(AgentIds, payload.AgentIds);
         Assert.True(payload.AsyncProcessing);
@@ -61,7 +61,7 @@ public class EmlSubmissionParserTests
             Body = builder.ToMessageBody(),
         };
 
-        var payload = await _parser.ParseAsync(ToStream(message), "traded", AgentIds);
+        var payload = (await _parser.ParseAsync(ToStream(message), "traded", AgentIds)).Payload;
 
         var document = Assert.Single(payload.AttachedDocuments);
         Assert.Equal("Claims Experience.pdf", document.FileName);
@@ -94,7 +94,7 @@ public class EmlSubmissionParserTests
             Body = multipart,
         };
 
-        var payload = await _parser.ParseAsync(ToStream(message), "traded", AgentIds);
+        var payload = (await _parser.ParseAsync(ToStream(message), "traded", AgentIds)).Payload;
 
         var document = Assert.Single(payload.AttachedDocuments);
         Assert.Equal("Our renewal.eml", document.FileName);

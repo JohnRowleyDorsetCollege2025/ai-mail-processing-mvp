@@ -17,7 +17,7 @@ public sealed partial class EmlSubmissionParser
         _timeProvider = timeProvider;
     }
 
-    public async Task<AiSubmissionPayload> ParseAsync(
+    public async Task<ParsedSubmission> ParseAsync(
         Stream eml,
         string mailbox,
         IReadOnlyList<string> agentIds,
@@ -44,7 +44,7 @@ public sealed partial class EmlSubmissionParser
 
         var content = BuildContent(message, submissionId, mailbox, receivedOn, documents);
 
-        return new AiSubmissionPayload
+        var payload = new AiSubmissionPayload
         {
             AgentIds = agentIds,
             Content = content,
@@ -58,6 +58,8 @@ public sealed partial class EmlSubmissionParser
             AttachedDocuments = documents,
             AsyncProcessing = true,
         };
+
+        return new ParsedSubmission(payload, FormatSenders(message.From), message.Subject ?? string.Empty);
     }
 
     private static string BuildContent(
@@ -222,6 +224,9 @@ public sealed partial class EmlSubmissionParser
     private static string FormatUtc(DateTimeOffset value) =>
         value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
 }
+
+/// <summary>The AI payload plus email details useful for logging and storage that are not sent to the AI as fields.</summary>
+public sealed record ParsedSubmission(AiSubmissionPayload Payload, string From, string Subject);
 
 public sealed class InvalidEmlException : Exception
 {
