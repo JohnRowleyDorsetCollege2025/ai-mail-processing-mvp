@@ -11,7 +11,7 @@ test submissions.
 
 | Project | Port | Purpose |
 |---|---|---|
-| `src/Aura.MailIngest.Api` | 5100 | Accepts an `.eml`, parses it with MimeKit, builds the AI payload and POSTs it to the receiver. |
+| `src/Aura.MailIngest.Api` | 5100 | Accepts an `.eml`, parses it with MimeKit, builds the AI payload and POSTs it to the receiver. Saves each email to a local SQLite database for review (dev/demo only). |
 | `src/Aura.AiReceiver.Api` | 5200 | Placeholder for the AI vendor API. Validates and acknowledges (`202`), and keeps the last 100 submissions in memory for inspection. |
 | `src/Aura.SampleMailGenerator.Api` | 5300 | Generates broker submission emails with a PDF attachment from seeded, fictitious scenarios. |
 | `src/Aura.Contracts` | – | Payload contract shared by ingest and receiver. |
@@ -38,7 +38,7 @@ curl -X POST localhost:5300/api/samples/email/submit -H 'content-type: applicati
 
 | Endpoint | Description |
 |---|---|
-| `POST /api/submissions` | Parse and forward. Returns `202` with the submission id and the receiver's acknowledgement, `400` for an invalid `.eml`, `502` if the receiver fails. |
+| `POST /api/submissions` | Parse, store and forward. Returns `202` with the submission id and the receiver's acknowledgement, `400` for an invalid `.eml`, `502` if the receiver fails. |
 | `POST /api/submissions/preview` | Parse only; returns the payload that would be sent. Nothing is stored. |
 | `GET /api/submissions?status=&take=` | List stored submissions, most recent first. `status` is `Pending`, `Accepted` or `Failed`. |
 | `GET /api/submissions/{id}` | One stored submission, including the `content` text sent to the AI. |
