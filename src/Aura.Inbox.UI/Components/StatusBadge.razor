@@ -1,0 +1,7 @@
+@using InboxMock.Models
+
+<span class="badge badge-@Status.ToString().ToLowerInvariant()">@Status</span>
+
+@code {
+    [Parameter, EditorRequired] public ProcessingStatus Status { get; set; }
+}

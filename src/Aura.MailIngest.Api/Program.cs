@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddServiceDefaults();
 
 builder.Services.AddOptions<IngestOptions>().BindConfiguration(IngestOptions.SectionName);
 builder.Services.AddOptions<AiReceiverOptions>().BindConfiguration(AiReceiverOptions.SectionName).ValidateOnStart();
@@ -45,7 +46,7 @@ using (var scope = app.Services.CreateScope())
 app.UseExceptionHandler();
 app.MapOpenApi();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapDefaultEndpoints();
 
 var submissions = app.MapGroup("/api/submissions");
 

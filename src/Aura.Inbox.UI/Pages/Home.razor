@@ -1,0 +1,99 @@
+﻿@page "/"
+@using InboxMock.Components
+@using InboxMock.Models
+@using InboxMock.Services
+@inject MessageService Messages
+
+<PageTitle>Inbox</PageTitle>
+
+<div class="mail">
+    <nav class="folders">
+        <h1 class="brand">Inbox</h1>
+        <button class="folder @(filter is null ? "active" : "")" @onclick="() => filter = null">
+            <span>All mail</span><span class="count">@all.Count</span>
+        </button>
+        @foreach (var s in Enum.GetValues<ProcessingStatus>())
+        {
+            <button class="folder @(filter == s ? "active" : "")" @onclick="() => filter = s">
+                <span class="dot dot-@s.ToString().ToLowerInvariant()"></span>
+                <span>@s</span>
+                <span class="count">@all.Count(m => m.Status == s)</span>
+            </button>
+        }
+    </nav>
+
+    <section class="list">
+        @if (error is not null)
+        {
+            <p class="empty">@error</p>
+        }
+        else if (loading)
+        {
+            <p class="empty">Loading…</p>
+        }
+        else if (!visible.Any())
+        {
+            <p class="empty">No messages.</p>
+        }
+        else
+        {
+            @foreach (var m in visible)
+            {
+                <button class="row @(m.Id == selected?.Id ? "selected" : "")" @onclick="() => selected = m">
+                    <span class="avatar">@Initials(m.SenderName)</span>
+                    <span class="row-main">
+                        <span class="row-top">
+                            <span class="sender">@m.SenderName</span>
+                            <StatusBadge Status="m.Status" />
+                        </span>
+                        <span class="subject">@m.Subject</span>
+                        <span class="preview">@m.Body</span>
+                    </span>
+                </button>
+            }
+        }
+    </section>
+
+    <article class="reader">
+        @if (selected is null)
+        {
+            <p class="empty">Select a message to read it.</p>
+        }
+        else
+        {
+            <header>
+                <h2>@selected.Subject</h2>
+                <div class="from">
+                    <span class="avatar large">@Initials(selected.SenderName)</span>
+                    <div>
+                        <div class="sender">@selected.SenderName</div>
+                        <div class="email">&lt;@selected.SenderEmail&gt;</div>
+                    </div>
+                    <StatusBadge Status="selected.Status" />
+                </div>
+            </header>
+            <div class="body">@selected.Body</div>
+            <footer class="meta">Message ID: @selected.Id</footer>
+        }
+    </article>
+</div>
+
+@code {
+    List<EmailMessage> all = [];
+    EmailMessage? selected;
+    ProcessingStatus? filter;
+    bool loading = true;
+    string? error;
+
+    IEnumerable<EmailMessage> visible => all.Where(m => filter is null || m.Status == filter);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { all = await Messages.GetMessagesAsync() ?? []; }
+        catch (Exception ex) { error = $"Could not load messages: {ex.Message}"; }
+        loading = false;
+    }
+
+    static string Initials(string name) =>
+        string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
+}

@@ -4,6 +4,7 @@ using Aura.SampleMailGenerator.Api.Scenarios;
 using MimeKit;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddServiceDefaults();
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ScenarioGenerator>();
@@ -22,7 +23,7 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.MapOpenApi();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapDefaultEndpoints();
 
 var samples = app.MapGroup("/api/samples");
 

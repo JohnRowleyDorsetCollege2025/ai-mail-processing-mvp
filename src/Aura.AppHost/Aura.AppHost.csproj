@@ -1,0 +1,20 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.4">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aura.MailIngest.Api\Aura.MailIngest.Api.csproj" />
+    <ProjectReference Include="..\Aura.AiReceiver.Api\Aura.AiReceiver.Api.csproj" />
+    <ProjectReference Include="..\Aura.SampleMailGenerator.Api\Aura.SampleMailGenerator.Api.csproj" />
+    <ProjectReference Include="..\Aura.UI\EnterpriseSearch.csproj" />
+    <ProjectReference Include="..\Aura.Inbox.UI\InboxMock.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+    <UserSecretsId>8443f23c-044c-47da-9f48-4488bbfda64e</UserSecretsId>
+  </PropertyGroup>
+
+</Project>

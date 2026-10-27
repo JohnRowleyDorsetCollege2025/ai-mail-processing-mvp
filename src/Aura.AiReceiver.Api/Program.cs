@@ -5,6 +5,7 @@ using Aura.Contracts;
 // A short in-memory history is kept so end-to-end tests can confirm what arrived.
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddServiceDefaults();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ReceivedSubmissionLog>();
 builder.Services.AddProblemDetails();
@@ -18,7 +19,7 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.MapOpenApi();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapDefaultEndpoints();
 
 app.MapPost("/api/ai/submissions", (
     AiSubmissionPayload payload,

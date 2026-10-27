@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Aura.Contracts\Aura.Contracts.csproj" />
+    <ProjectReference Include="..\Aura.ServiceDefaults\Aura.ServiceDefaults.csproj" />
   </ItemGroup>
 
   <ItemGroup>

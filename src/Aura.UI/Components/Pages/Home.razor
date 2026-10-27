@@ -1,0 +1,133 @@
+﻿@page "/"
+@inject ExceptionService Exceptions
+@inject AnnotationState Annotations
+
+<PageTitle>Enterprise Search</PageTitle>
+
+<h1 class="page-title">Enterprise Search</h1>
+
+<nav class="tabs">
+    <button class="tab @Css(Tab.Cases)" @onclick="() => tab = Tab.Cases">Cases</button>
+    <button class="tab @Css(Tab.Exceptions)" @onclick="() => tab = Tab.Exceptions"><span class="lock">@Lock</span>Exceptions</button>
+    <button class="tab @Css(Tab.Reconciliation)" @onclick="() => tab = Tab.Reconciliation"><span class="lock">@Lock</span>Reconciliation</button>
+</nav>
+
+@if (tab == Tab.Exceptions)
+{
+    <div class="restricted-row">
+        <span class="restricted"><span class="lock">@Lock</span> Restricted: authorised users</span>
+        @if (Annotations.Enabled)
+        {
+            <span class="note"><b class="tag">P1</b> Exceptions &amp; Reconciliation tabs rendered only for authorised Commercial Ops role (role name TBC)</span>
+        }
+    </div>
+
+    <div class="results-head">
+        <h2>Exceptions (Found @items.Count)</h2>
+        <label class="sort">Sort by
+            <select @bind="sort">
+                <option value="newest">Received date (newest first)</option>
+                <option value="oldest">Received date (oldest first)</option>
+                <option value="id">Submission ID</option>
+            </select>
+        </label>
+    </div>
+
+    var sorted = Sorted;
+    @for (var i = 0; i < sorted.Count; i++)
+    {
+        var item = sorted[i];
+        var first = i == 0;
+        <section class="card">
+            <div class="card-top">
+                <span class="status-line">
+                    <span class="badge @(item.Status == ExceptionStatus.Open ? "open" : "review")">@(item.Status == ExceptionStatus.Open ? "Open" : "Under review")</span>
+                    <small>Exception handling status</small>
+                </span>
+                <span class="age"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.5" /><path d="M8 4v4l2.5 1.5" /></svg> Open for @OpenFor(item)</span>
+            </div>
+            <div class="fields">
+                <div><label>Submission ID</label><span>@item.SubmissionId</span></div>
+                <div class="wide"><label>Email subject</label><span class="clip" title="@item.EmailSubject">@item.EmailSubject</span></div>
+                <div><label>Date/time received</label><span>@item.Received.ToString("dd/MM/yyyy HH:mm")</span></div>
+                <div>
+                    <label>Broker</label>
+                    @if (item.Broker is null)
+                    {
+                        <span class="muted">Not identified</span>
+                    }
+                    else
+                    {
+                        <span>@item.Broker</span>
+                    }
+                </div>
+                <div><label>Processing stage</label><span>@item.ProcessingStage</span></div>
+                <div><label>Exception reason</label><span>@item.ExceptionReason</span></div>
+            </div>
+            <div class="actions">
+                <button class="btn" @onclick="() => View(item)">
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="3" y="2" width="10" height="12" rx="1" /><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3" /></svg> View
+                </button>
+                <button class="btn" @onclick="() => Resolve(item)">
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8.5l3.2 3L13 4.5" /></svg> Resolve
+                </button>
+                @if (Annotations.Enabled && first)
+                {
+                    <span class="note"><b class="tag">P2</b> Resolve shown only to users with resolution permission - no Delete action on exception cards</span>
+                }
+            </div>
+        </section>
+    }
+
+    @if (message is not null)
+    {
+        <div class="toast">@message</div>
+    }
+}
+else
+{
+    <p class="placeholder">@tab search is not part of this mockup.</p>
+}
+
+<div class="annotation-toggle">
+    <button class="btn" @onclick="() => Annotations.Enabled = !Annotations.Enabled">Annotations: @(Annotations.Enabled ? "On" : "Off")</button>
+</div>
+
+@code {
+    private enum Tab { Cases, Exceptions, Reconciliation }
+
+    private const string Lock = "\U0001F512︎";
+    private Tab tab = Tab.Exceptions;
+    private string sort = "newest";
+    private string? message;
+    private List<ExceptionCase> items = [];
+
+    protected override void OnInitialized() => items = Exceptions.GetAll();
+
+    private List<ExceptionCase> Sorted => sort switch
+    {
+        "oldest" => [.. items.OrderBy(i => i.Received)],
+        "id" => [.. items.OrderBy(i => i.SubmissionId)],
+        _ => [.. items.OrderByDescending(i => i.Received)],
+    };
+
+    private string Css(Tab t) => t == tab ? "active" : "";
+
+    private static string OpenFor(ExceptionCase c)
+    {
+        var span = DateTime.Now - c.Received;
+        if (span < TimeSpan.Zero) span = TimeSpan.Zero;
+        return span.TotalHours < 24 ? Plural((int)span.TotalHours, "hour") : Plural((int)span.TotalDays, "day");
+    }
+
+    private static string Plural(int n, string unit) => $"{n} {unit}{(n == 1 ? "" : "s")}";
+
+    private void View(ExceptionCase c) => message = $"Viewing {c.SubmissionId}";
+
+    private void Resolve(ExceptionCase c)
+    {
+        Exceptions.Resolve(c.SubmissionId);
+        items = Exceptions.GetAll();
+        message = $"{c.SubmissionId} resolved";
+    }
+}

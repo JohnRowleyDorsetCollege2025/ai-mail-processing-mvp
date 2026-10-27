@@ -14,22 +14,66 @@ test submissions.
 | `src/Aura.MailIngest.Api` | 5100 | Accepts an `.eml`, parses it with MimeKit, builds the AI payload and POSTs it to the receiver. Saves each email to a local SQLite database for review (dev/demo only). |
 | `src/Aura.AiReceiver.Api` | 5200 | Placeholder for the AI vendor API. Validates and acknowledges (`202`), and keeps the last 100 submissions in memory for inspection. |
 | `src/Aura.SampleMailGenerator.Api` | 5300 | Generates broker submission emails with a PDF attachment from seeded, fictitious scenarios. |
+| `src/Aura.UI` (`EnterpriseSearch.csproj`) | 5400 | Blazor Server UI (Enterprise Search: cases, exceptions, reconciliation). Currently uses in-memory sample data. |
+| `src/Aura.Inbox.UI` (`InboxMock.csproj`) | 5165 | Standalone Blazor WebAssembly inbox mock-up, served by the WebAssembly dev server. |
+| `src/Aura.AppHost` | – | .NET Aspire AppHost: starts all three APIs and the Aspire dashboard. |
+| `src/Aura.ServiceDefaults` | – | Shared Aspire defaults: OpenTelemetry (logs, traces, metrics), health checks and HTTP resilience. |
 | `src/Aura.Contracts` | – | Payload contract shared by ingest and receiver. |
 | `tests/Aura.MailIngest.Tests` | – | Parser, API and generator tests. |
 
 ## Running
 
-Requires the .NET 10 SDK.
+Requires the .NET 10 SDK and a trusted HTTPS development certificate (`dotnet dev-certs https --trust`).
+
+### With Aspire (recommended)
 
 ```sh
-dotnet test                                                     # 21 tests
-dotnet run --project src/Aura.AiReceiver.Api &
-dotnet run --project src/Aura.MailIngest.Api &
-dotnet run --project src/Aura.SampleMailGenerator.Api &
+dotnet run --project src/Aura.AppHost
+```
 
+Or set `Aura.AppHost` as the startup project in Visual Studio or Rider, or launch it from VS Code's C# Dev Kit. The
+console prints a dashboard link with a login token, e.g. `https://localhost:17267/login?t=...`.
+
+The AppHost starts both UIs and the AI receiver, then the mail ingest API, then the sample generator, each one waiting for the
+previous to report healthy. It passes each API the URL of the next, so the generator sends to the ingest API and
+the ingest API to the receiver. The dashboard shows each API's state, console logs, structured logs, distributed traces
+(follow one sample from the generator through ingest to the receiver) and metrics, and links to each API's OpenAPI document.
+
+The UIs are at http://localhost:5400 (Enterprise Search) and http://localhost:5165 (Inbox). The APIs stay on ports 5100, 5200 and 5300, so [requests.http](requests.http) and the `curl` examples work unchanged.
+Stop everything with Ctrl+C.
+
+```sh
 # Generate an email and push it through the whole chain
 curl -X POST localhost:5300/api/samples/email/submit -H 'content-type: application/json' -d '{}'
 ```
+
+### Without Aspire
+
+Each API also runs on its own, using the URLs in its `appsettings.json`:
+
+```sh
+dotnet run --project src/Aura.AiReceiver.Api &
+dotnet run --project src/Aura.MailIngest.Api &
+dotnet run --project src/Aura.SampleMailGenerator.Api &
+```
+
+### Tests
+
+```sh
+dotnet test                                                     # 21 tests
+```
+
+### Notes
+
+- Health endpoints (`/health`, `/alive`) come from `Aura.ServiceDefaults` and are mapped in Development only.
+  The Inbox UI is a WebAssembly app that runs in the browser, so it has no service defaults: the dashboard shows its
+  console output but no traces, metrics or health checks.
+- Stop the AppHost with Ctrl+C in its terminal (or the stop button in your IDE). Killing only the outer
+  `dotnet run` process leaves the APIs running in the background on their ports.
+- Outgoing HTTP calls use Aspire's standard resilience handler with retries **disabled for POSTs**: a replayed
+  submission could create a duplicate at the AI vendor. Timeouts allow up to 100 seconds for large attachments.
+- The `http` launch profile of the AppHost sets `ASPIRE_ALLOW_UNSECURED_TRANSPORT=true`, for use when no
+  HTTPS certificate is available.
 
 [requests.http](requests.http) has ready-made requests for every endpoint. OpenAPI documents are served at
 `/openapi/v1.json` on each API.

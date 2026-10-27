@@ -1,9 +1,17 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Aura.AiReceiver.Api/Aura.AiReceiver.Api.csproj" />
+    <Project Path="src/Aura.AppHost/Aura.AppHost.csproj" />
     <Project Path="src/Aura.Contracts/Aura.Contracts.csproj" />
     <Project Path="src/Aura.MailIngest.Api/Aura.MailIngest.Api.csproj" />
     <Project Path="src/Aura.SampleMailGenerator.Api/Aura.SampleMailGenerator.Api.csproj" />
+    <Project Path="src/Aura.ServiceDefaults/Aura.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/src/Aura.Inbox.UI/">
+    <Project Path="src/Aura.Inbox.UI/InboxMock.csproj" />
+  </Folder>
+  <Folder Name="/src/Aura.UI/">
+    <Project Path="src/Aura.UI/EnterpriseSearch.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Aura.MailIngest.Tests/Aura.MailIngest.Tests.csproj" />
