@@ -1,7 +1,8 @@
 using System.Collections.Concurrent;
 using Aura.Contracts;
 
-// Placeholder for the third-party AI processing API. It validates and acknowledges submissions but does no processing.
+// Placeholder for the third-party AI processing API. It validates and acknowledges submissions, returning a
+// stand-in AI CTP model from simple keyword matching (see PlaceholderCtpExtractor) in place of real AI processing.
 // A short in-memory history is kept so end-to-end tests can confirm what arrived.
 
 var builder = WebApplication.CreateBuilder(args);
@@ -53,9 +54,10 @@ app.MapPost("/api/ai/submissions", (
             SubmissionId = payload.Context.SubmissionId,
             Status = "accepted",
             ReceivedAt = receivedAt,
+            Ctp = PlaceholderCtpExtractor.Extract(payload),
         });
 })
-.WithSummary("Accept a submission for AI processing (placeholder: acknowledges only)");
+.WithSummary("Accept a submission for AI processing (placeholder: returns a keyword-based CTP model)");
 
 app.MapGet("/api/ai/submissions", (ReceivedSubmissionLog log) => Results.Ok(log.Recent()))
     .WithSummary("List recently received submissions (in-memory, most recent first)");

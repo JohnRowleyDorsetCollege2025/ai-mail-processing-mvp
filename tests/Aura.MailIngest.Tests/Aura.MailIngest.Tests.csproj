@@ -22,6 +22,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Aura.MailIngest.Api\Aura.MailIngest.Api.csproj" />
     <ProjectReference Include="..\..\src\Aura.SampleMailGenerator.Api\Aura.SampleMailGenerator.Api.csproj" />
+    <ProjectReference Include="..\..\src\Aura.WorkerService\Aura.WorkerService.csproj" />
+    <ProjectReference Include="..\..\src\Aura.AiReceiver.Api\Aura.AiReceiver.Api.csproj" />
   </ItemGroup>
 
 </Project>

@@ -6,6 +6,7 @@
     <ProjectReference Include="..\Aura.SampleMailGenerator.Api\Aura.SampleMailGenerator.Api.csproj" />
     <ProjectReference Include="..\Aura.UI\EnterpriseSearch.csproj" />
     <ProjectReference Include="..\Aura.Inbox.UI\InboxMock.csproj" />
+    <ProjectReference Include="..\Aura.WorkerService\Aura.WorkerService.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

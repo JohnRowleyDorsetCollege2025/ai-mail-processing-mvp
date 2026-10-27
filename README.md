@@ -12,13 +12,14 @@ test submissions.
 | Project | Port | Purpose |
 |---|---|---|
 | `src/Aura.MailIngest.Api` | 5100 | Accepts an `.eml`, parses it with MimeKit, builds the AI payload and POSTs it to the receiver. Saves each email to a local SQLite database for review (dev/demo only). |
-| `src/Aura.AiReceiver.Api` | 5200 | Placeholder for the AI vendor API. Validates and acknowledges (`202`), and keeps the last 100 submissions in memory for inspection. |
+| `src/Aura.AiReceiver.Api` | 5200 | Placeholder for the AI vendor API. Validates, acknowledges (`202`) with a stand-in AI CTP model, and keeps the last 100 submissions in memory for inspection. |
 | `src/Aura.SampleMailGenerator.Api` | 5300 | Generates broker submission emails with a PDF attachment from seeded, fictitious scenarios. |
 | `src/Aura.UI` (`EnterpriseSearch.csproj`) | 5400 | Blazor Server UI (Enterprise Search: cases, exceptions, reconciliation). Currently uses in-memory sample data. |
 | `src/Aura.Inbox.UI` (`InboxMock.csproj`) | 5165 | Standalone Blazor WebAssembly inbox mock-up, served by the WebAssembly dev server. |
+| `src/Aura.WorkerService` | – | Background worker running periodic tasks (see below). |
 | `src/Aura.AppHost` | – | .NET Aspire AppHost: starts all three APIs and the Aspire dashboard. |
 | `src/Aura.ServiceDefaults` | – | Shared Aspire defaults: OpenTelemetry (logs, traces, metrics), health checks and HTTP resilience. |
-| `src/Aura.Contracts` | – | Payload contract shared by ingest and receiver. |
+| `src/Aura.Contracts` | – | Contracts shared by ingest and receiver: the AI payload, the acknowledgement and the AI CTP model. |
 | `tests/Aura.MailIngest.Tests` | – | Parser, API and generator tests. |
 
 ## Running
@@ -34,7 +35,7 @@ dotnet run --project src/Aura.AppHost
 Or set `Aura.AppHost` as the startup project in Visual Studio or Rider, or launch it from VS Code's C# Dev Kit. The
 console prints a dashboard link with a login token, e.g. `https://localhost:17267/login?t=...`.
 
-The AppHost starts both UIs and the AI receiver, then the mail ingest API, then the sample generator, each one waiting for the
+The AppHost starts both UIs and the AI receiver, then the mail ingest API, then the sample generator, then the worker, each one waiting for the
 previous to report healthy. It passes each API the URL of the next, so the generator sends to the ingest API and
 the ingest API to the receiver. The dashboard shows each API's state, console logs, structured logs, distributed traces
 (follow one sample from the generator through ingest to the receiver) and metrics, and links to each API's OpenAPI document.
@@ -60,7 +61,7 @@ dotnet run --project src/Aura.SampleMailGenerator.Api &
 ### Tests
 
 ```sh
-dotnet test                                                     # 21 tests
+dotnet test                                                     # 27 tests
 ```
 
 ### Notes
@@ -77,6 +78,28 @@ dotnet test                                                     # 21 tests
 
 [requests.http](requests.http) has ready-made requests for every endpoint. OpenAPI documents are served at
 `/openapi/v1.json` on each API.
+
+## Worker service
+
+`Aura.WorkerService` hosts background tasks. Each one derives from `PeriodicTask<TOptions>`, which runs the task, waits
+`Interval`, and repeats. A failed run is logged and the next run still happens. Settings are re-read before every run,
+so edits to `Enabled` or `Interval` in `appsettings.json` apply without a restart.
+
+| Task | Config section | What it does |
+|---|---|---|
+| `SampleSubmissionTask` | `Tasks:SampleSubmission` | POSTs to the generator's `/api/samples/email/submit` every `Interval` (default `00:00:30`), producing a steady stream of random submissions through ingest to the AI receiver. |
+
+```json
+"Tasks": {
+  "SampleSubmission": { "Enabled": true, "Interval": "00:00:30", "BaseUrl": "http://localhost:5300", "Mailbox": null }
+}
+```
+
+Under Aspire, `BaseUrl` is set to the generator's endpoint. Set `Enabled` to `false` to pause the traffic.
+
+To add a task: create a class deriving from `PeriodicTask<TOptions>` with its options deriving from
+`PeriodicTaskOptions`, bind the options to a new `Tasks:<Name>` section, and register it with `AddHostedService` in
+`Program.cs`.
 
 ## Mail ingest API
 
@@ -107,8 +130,25 @@ Every email posted to `POST /api/submissions` is saved to a SQLite database befo
 the sender, subject, attachment names, the `content` text, the raw `.eml`, and the forwarding outcome: `Accepted`,
 or `Failed` with the error. If the receiver is down, the email is still kept for review.
 
+When the receiver accepts a submission, its acknowledgement is stored as JSON in the nullable `AIResponse` column
+and returned as `aiResponse` by `GET /api/submissions/{id}`. The acknowledgement includes the **AI CTP model**
+(`ctp`): the facts the AI extracts for our CTP APIs. The fields are provisional and will change:
+
+```json
+"aiResponse": {
+  "submissionId": "…", "status": "accepted", "receivedAt": "…",
+  "ctp": { "brokerName": "Corrib Risk Partners", "brokerId": "BRK-3F9A1C", "occupationCode": "55.10",
+           "occupationDescription": "Hotels and similar accommodation", "appetite": "Refer" }
+}
+```
+
+Until the vendor is connected, the receiver fills `ctp` using `PlaceholderCtpExtractor`: naive keyword matching
+for the occupation and appetite, the sender's domain for a fake broker id, and the email signature for the
+broker's firm.
+
 The database is `src/Aura.MailIngest.Api/App_Data/submissions.db` (`Storage:DatabasePath`). It's created on startup,
-has no migrations, and is ignored by git. Delete it to start afresh, or after changing the schema. This store is not
+has no migrations, and is ignored by git. New nullable columns (such as `AIResponse`) are added to an existing
+database on startup. Delete it to start afresh, or after a more drastic schema change. This store is not
 intended for production.
 
 Configuration (`appsettings.json`): `Ingest:AgentIds` (sent as `agent_ids`), `Ingest:DefaultMailbox`,

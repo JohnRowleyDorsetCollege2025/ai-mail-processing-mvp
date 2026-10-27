@@ -40,7 +40,7 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<SubmissionDbContext>().Database.EnsureCreated();
+    scope.ServiceProvider.GetRequiredService<SubmissionDbContext>().EnsureSchema();
 }
 
 app.UseExceptionHandler();
@@ -119,7 +119,7 @@ submissions.MapGet("/", async (SubmissionStatus? status, int? take, SubmissionSt
 
 submissions.MapGet("/{submissionId}", async (string submissionId, SubmissionStore store, CancellationToken ct) =>
     await store.GetAsync(submissionId, ct) is { } detail ? Results.Ok(detail) : Results.NotFound())
-.WithSummary("Get a stored submission, including the content text sent to the AI");
+.WithSummary("Get a stored submission, including the content text sent to the AI and the AI response");
 
 submissions.MapGet("/{submissionId}/eml", async (string submissionId, SubmissionStore store, CancellationToken ct) =>
     await store.GetRawEmlAsync(submissionId, ct) is { } eml

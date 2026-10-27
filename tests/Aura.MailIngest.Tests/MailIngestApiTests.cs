@@ -106,6 +106,8 @@ public class MailIngestApiTests : IDisposable
 
         var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{submissionId}", JsonOptions);
         Assert.StartsWith("SUBMISSION\n", detail!.Content);
+        Assert.Equal(submissionId, detail.AiResponse!.SubmissionId);
+        Assert.Equal(new AiCtpModel { BrokerName = "Test Brokers", BrokerId = "BRK-1", OccupationCode = "55.10", Appetite = "Refer" }, detail.AiResponse.Ctp);
 
         Assert.Equal(eml, await client.GetByteArrayAsync($"/api/submissions/{submissionId}/eml"));
     }
@@ -152,6 +154,46 @@ public class MailIngestApiTests : IDisposable
         return content;
     }
 
+    [Fact]
+    public async Task Failed_forward_has_no_ai_response()
+    {
+        using var client = CreateClient(new StubReceiver(HttpStatusCode.InternalServerError));
+        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
+
+        var stored = Assert.Single((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!);
+        var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{stored.SubmissionId}", JsonOptions);
+        Assert.Null(detail!.AiResponse);
+    }
+
+    [Fact]
+    public async Task Database_created_before_AIResponse_is_upgraded_without_losing_rows()
+    {
+        // The table as it was before the AIResponse column existed.
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE Submissions (
+                    SubmissionId TEXT NOT NULL PRIMARY KEY, Mailbox TEXT NOT NULL, "From" TEXT NOT NULL, Subject TEXT NOT NULL,
+                    ReceivedOn TEXT NOT NULL, AttachmentCount INTEGER NOT NULL, AttachmentNames TEXT NOT NULL, Content TEXT NOT NULL,
+                    RawEml BLOB NOT NULL, StoredAtUtc TEXT NOT NULL, Status TEXT NOT NULL, ForwardedAtUtc TEXT NULL, Error TEXT NULL);
+                INSERT INTO Submissions VALUES ('old-1', 'traded', 'a@b.example', 'Old', '2026-10-01T00:00:00Z', 0, '', 'x',
+                    X'00', '2026-10-01 00:00:00', 'Accepted', NULL, NULL);
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
+        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
+
+        var all = (await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!;
+        Assert.Equal(2, all.Count);
+        Assert.Null((await client.GetFromJsonAsync<StoredSubmissionDetail>("/api/submissions/old-1", JsonOptions))!.AiResponse);
+        var newest = all.Single(s => s.SubmissionId != "old-1");
+        Assert.NotNull((await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{newest.SubmissionId}", JsonOptions))!.AiResponse);
+    }
+
     private HttpClient CreateClient(StubReceiver receiver)
     {
         var factory = new WebApplicationFactory<EmlSubmissionParser>().WithWebHostBuilder(builder =>
@@ -185,6 +227,7 @@ public class MailIngestApiTests : IDisposable
                 SubmissionId = doc.RootElement.GetProperty("context").GetProperty("submissionId").GetString()!,
                 Status = "accepted",
                 ReceivedAt = DateTimeOffset.UtcNow,
+                Ctp = new AiCtpModel { BrokerName = "Test Brokers", BrokerId = "BRK-1", OccupationCode = "55.10", Appetite = "Refer" },
             };
             return new HttpResponseMessage(status) { Content = JsonContent.Create(ack) };
         }

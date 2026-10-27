@@ -6,6 +6,7 @@
     <Project Path="src/Aura.MailIngest.Api/Aura.MailIngest.Api.csproj" />
     <Project Path="src/Aura.SampleMailGenerator.Api/Aura.SampleMailGenerator.Api.csproj" />
     <Project Path="src/Aura.ServiceDefaults/Aura.ServiceDefaults.csproj" />
+    <Project Path="src/Aura.WorkerService/Aura.WorkerService.csproj" />
   </Folder>
   <Folder Name="/src/Aura.Inbox.UI/">
     <Project Path="src/Aura.Inbox.UI/InboxMock.csproj" />

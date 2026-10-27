@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Aura.Contracts;
 using Microsoft.EntityFrameworkCore;
 
@@ -5,7 +6,8 @@ namespace Aura.MailIngest.Api.Storage;
 
 /// <summary>
 /// Development/demo store of received emails so they can be reviewed later. SQLite, created on first use with no
-/// migrations: if the schema changes, delete the database file and it will be recreated.
+/// migrations. Columns added after the first release are added to existing databases by <see cref="EnsureSchema"/>;
+/// for anything more drastic, delete the database file and it will be recreated.
 /// </summary>
 public sealed class SubmissionDbContext(DbContextOptions<SubmissionDbContext> options) : DbContext(options)
 {
@@ -17,6 +19,19 @@ public sealed class SubmissionDbContext(DbContextOptions<SubmissionDbContext> op
         submission.HasKey(s => s.SubmissionId);
         submission.HasIndex(s => s.StoredAtUtc);
         submission.Property(s => s.Status).HasConversion<string>();
+        submission.Property(s => s.AIResponse).HasColumnName("AIResponse");
+    }
+
+    /// <summary>Creates the database if needed and adds columns introduced since it was created, keeping existing rows.</summary>
+    public void EnsureSchema()
+    {
+        Database.EnsureCreated();
+
+        var columns = Database.SqlQueryRaw<string>("SELECT name AS Value FROM pragma_table_info('Submissions')").ToList();
+        if (!columns.Contains("AIResponse"))
+        {
+            Database.ExecuteSqlRaw("ALTER TABLE Submissions ADD COLUMN AIResponse TEXT NULL");
+        }
     }
 }
 
@@ -49,6 +64,9 @@ public sealed class StoredSubmission
     public SubmissionStatus Status { get; set; } = SubmissionStatus.Pending;
     public DateTime? ForwardedAtUtc { get; set; }
     public string? Error { get; set; }
+
+    /// <summary>The AI receiver's acknowledgement (including the AI CTP model) as JSON. Null until forwarded successfully.</summary>
+    public string? AIResponse { get; set; }
 }
 
 public sealed record StoredSubmissionSummary(
@@ -67,7 +85,8 @@ public sealed record StoredSubmissionSummary(
 public sealed record StoredSubmissionDetail(
     StoredSubmissionSummary Summary,
     string Content,
-    long EmlSizeBytes);
+    long EmlSizeBytes,
+    AiSubmissionAcknowledgement? AiResponse);
 
 public sealed class SubmissionStore(SubmissionDbContext db, TimeProvider timeProvider)
 {
@@ -98,6 +117,7 @@ public sealed class SubmissionStore(SubmissionDbContext db, TimeProvider timePro
         submission.Status = SubmissionStatus.Accepted;
         submission.ForwardedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
         submission.Error = null;
+        submission.AIResponse = JsonSerializer.Serialize(ack);
         await db.SaveChangesAsync(ct);
     }
 
@@ -125,16 +145,29 @@ public sealed class SubmissionStore(SubmissionDbContext db, TimeProvider timePro
             .ToListAsync(ct);
     }
 
-    public Task<StoredSubmissionDetail?> GetAsync(string submissionId, CancellationToken ct) =>
-        db.Submissions.AsNoTracking()
+    public async Task<StoredSubmissionDetail?> GetAsync(string submissionId, CancellationToken ct)
+    {
+        var row = await db.Submissions.AsNoTracking()
             .Where(s => s.SubmissionId == submissionId)
-            .Select(s => new StoredSubmissionDetail(
-                new StoredSubmissionSummary(
+            .Select(s => new
+            {
+                Summary = new StoredSubmissionSummary(
                     s.SubmissionId, s.Mailbox, s.From, s.Subject, s.ReceivedOn, s.AttachmentCount, s.AttachmentNames,
                     s.Status, s.StoredAtUtc, s.ForwardedAtUtc, s.Error),
                 s.Content,
-                s.RawEml.Length))
+                EmlSizeBytes = (long)s.RawEml.Length,
+                s.AIResponse,
+            })
             .FirstOrDefaultAsync(ct);
+
+        return row is null
+            ? null
+            : new StoredSubmissionDetail(
+                row.Summary,
+                row.Content,
+                row.EmlSizeBytes,
+                row.AIResponse is null ? null : JsonSerializer.Deserialize<AiSubmissionAcknowledgement>(row.AIResponse));
+    }
 
     public Task<byte[]?> GetRawEmlAsync(string submissionId, CancellationToken ct) =>
         db.Submissions.AsNoTracking()

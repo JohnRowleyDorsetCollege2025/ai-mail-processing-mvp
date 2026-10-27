@@ -13,4 +13,8 @@ public sealed record AiSubmissionAcknowledgement
 
     [JsonPropertyName("receivedAt")]
     public required DateTimeOffset ReceivedAt { get; init; }
+
+    /// <summary>AI extraction result. Null when the AI has not produced one (e.g. processing is asynchronous).</summary>
+    [JsonPropertyName("ctp")]
+    public AiCtpModel? Ctp { get; init; }
 }
