@@ -92,3 +92,39 @@ public class SampleSubmissionTaskTests
         public IDisposable? OnChange(Action<SampleSubmissionOptions, string?> listener) => null;
     }
 }
+
+public class ForwardPendingTaskTests
+{
+    [Fact]
+    public async Task Forwarding_client_is_not_limited_by_the_shared_resilience_timeout()
+    {
+        // Shared defaults as in Aura.ServiceDefaults, but with a tiny timeout: if the forwarding client still had the
+        // shared handler, a 1s call would be cut off at 200ms. It must succeed, limited only by its own HttpClient.Timeout.
+        var services = new ServiceCollection();
+        services.ConfigureHttpClientDefaults(http => http.AddStandardResilienceHandler(o =>
+        {
+            o.AttemptTimeout.Timeout = TimeSpan.FromMilliseconds(200);
+            o.TotalRequestTimeout.Timeout = TimeSpan.FromMilliseconds(300);
+            o.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(1);
+        }));
+        Aura.WorkerService.Tasks.ForwardPendingTask.AddHttpClient(services);
+        services.AddHttpClient(Aura.WorkerService.Tasks.ForwardPendingTask.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new SlowHandler(TimeSpan.FromSeconds(1)));
+        var client = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>()
+            .CreateClient(Aura.WorkerService.Tasks.ForwardPendingTask.HttpClientName);
+        client.Timeout = TimeSpan.FromSeconds(5); // as ForwardPendingTask does from Tasks:ForwardPending:Timeout
+
+        var response = await client.PostAsync("http://ingest.test/api/submissions/forward", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    private sealed class SlowHandler(TimeSpan delay) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(delay, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+    }
+}

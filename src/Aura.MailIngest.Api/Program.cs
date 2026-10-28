@@ -1,4 +1,6 @@
 using Aura.MailIngest.Api;
+using Aura.MailIngest.Api.Forwarding;
+using Aura.MailIngest.Api.Inbox;
 using Aura.MailIngest.Api.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -24,6 +26,16 @@ var databasePath = Path.Combine(
 Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 builder.Services.AddDbContext<SubmissionDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
 builder.Services.AddScoped<SubmissionStore>();
+builder.Services.AddOptions<ForwardingOptions>().BindConfiguration(ForwardingOptions.SectionName);
+builder.Services.AddSingleton<ForwardingGate>();
+builder.Services.AddScoped<SubmissionForwarder>();
+
+// Live inbox: SignalR hub plus CORS for the Blazor WebAssembly inbox, which runs on its own origin.
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<InboxNotifier>();
+var inboxOrigins = builder.Configuration.GetSection("Inbox:AllowedOrigins").Get<string[]>() ?? [];
+builder.Services.AddCors(options => options.AddPolicy("Inbox", policy =>
+    policy.WithOrigins(inboxOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
@@ -44,19 +56,20 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseExceptionHandler();
+app.UseCors();
 app.MapOpenApi();
 
 app.MapDefaultEndpoints();
 
 var submissions = app.MapGroup("/api/submissions");
 
-// Parses the .eml, stores it, and forwards the payload to the AI receiver.
+// Parses the .eml and stores it as Pending. It is sent to the AI later by POST /api/submissions/forward.
 submissions.MapPost("/", async (
     HttpRequest request,
     string? mailbox,
     EmlSubmissionParser parser,
-    AiReceiverClient receiver,
     SubmissionStore store,
+    InboxNotifier inbox,
     IOptions<IngestOptions> options,
     ILogger<Program> logger,
     CancellationToken ct) =>
@@ -69,35 +82,45 @@ submissions.MapPost("/", async (
 
     var payload = parsed!.Payload;
     var stored = await store.AddAsync(parsed, rawEml!, ct);
+    await inbox.PublishAsync(stored);
 
     logger.LogInformation(
-        "Parsed submission {SubmissionId} with {AttachmentCount} attachment(s); forwarding to AI receiver",
+        "Stored submission {SubmissionId} with {AttachmentCount} attachment(s); pending AI submission",
         payload.Context.SubmissionId, payload.Context.AttachmentCount);
+
+    return Results.Accepted($"/api/submissions/{payload.Context.SubmissionId}", new
+    {
+        submissionId = payload.Context.SubmissionId,
+        attachmentCount = payload.Context.AttachmentCount,
+        status = stored.Status,
+    });
+})
+.DisableAntiforgery()
+.WithSummary("Parse an .eml file and store it, pending submission to the AI")
+.WithDescription("Send the .eml either as multipart/form-data (field 'file') or as a raw message/rfc822 body.");
+
+// Sends up to 'max' pending submissions to the AI receiver, oldest first, one at a time. Called on a schedule by
+// Aura.WorkerService. Only one run at a time: a concurrent call gets 409 rather than sending anything twice.
+submissions.MapPost("/forward", async (int? max, ForwardingGate gate, SubmissionForwarder forwarder, CancellationToken ct) =>
+{
+    if (!await gate.Semaphore.WaitAsync(TimeSpan.Zero, ct))
+    {
+        return Results.Problem(
+            "A forwarding run is already in progress; try again later.",
+            title: "Forwarding in progress",
+            statusCode: StatusCodes.Status409Conflict);
+    }
 
     try
     {
-        var ack = await receiver.SubmitAsync(payload, ct);
-        await store.MarkForwardedAsync(stored, ack, ct);
-        return Results.Accepted($"/api/submissions/{payload.Context.SubmissionId}", new
-        {
-            submissionId = payload.Context.SubmissionId,
-            attachmentCount = payload.Context.AttachmentCount,
-            receiver = ack,
-        });
+        return Results.Ok(await forwarder.ForwardPendingAsync(max ?? 5, ct));
     }
-    catch (Exception ex) when (ex is AiReceiverException or HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+    finally
     {
-        logger.LogError(ex, "Failed to forward submission {SubmissionId}", payload.Context.SubmissionId);
-        await store.MarkFailedAsync(stored, ex.Message, ct);
-        return Results.Problem(
-            title: "AI receiver unavailable",
-            detail: ex.Message,
-            statusCode: StatusCodes.Status502BadGateway);
+        gate.Semaphore.Release();
     }
 })
-.DisableAntiforgery()
-.WithSummary("Parse an .eml file and submit it for AI processing")
-.WithDescription("Send the .eml either as multipart/form-data (field 'file') or as a raw message/rfc822 body.");
+.WithSummary("Send pending submissions to the AI receiver, one at a time, waiting for each AI response");
 
 // Returns the payload that would be sent, without storing or forwarding it. Useful for inspecting the parser output.
 submissions.MapPost("/preview", async (
@@ -126,6 +149,13 @@ submissions.MapGet("/{submissionId}/eml", async (string submissionId, Submission
         ? Results.File(eml, "message/rfc822", $"{submissionId}.eml")
         : Results.NotFound())
 .WithSummary("Download the original .eml exactly as received");
+
+app.MapGet("/api/inbox", async (int? take, SubmissionStore store, CancellationToken ct) =>
+    Results.Ok(await store.ListInboxAsync(Math.Clamp(take ?? 100, 1, 500), ct)))
+.RequireCors("Inbox")
+.WithSummary("Inbox view of the most recent submissions; live updates are pushed on " + InboxHub.Path);
+
+app.MapHub<InboxHub>(InboxHub.Path).RequireCors("Inbox");
 
 app.Run();
 

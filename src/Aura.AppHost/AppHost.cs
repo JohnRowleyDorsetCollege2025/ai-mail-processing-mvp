@@ -23,16 +23,23 @@ var generator = builder.AddProject<Projects.Aura_SampleMailGenerator_Api>("sampl
     .WithUrl("/openapi/v1.json", "OpenAPI")
     .WithUrl("/api/samples/email", "Download sample .eml");
 
-// Background tasks. Task 1 calls the generator's submit endpoint every Tasks:SampleSubmission:Interval (default 30s).
+// Background tasks: SampleSubmission asks the generator for a sample email (default every 30s);
+// ForwardPending asks ingest to send pending emails to the AI (default every 2 minutes, 5 at a time).
 builder.AddProject<Projects.Aura_WorkerService>("worker")
     .WithEnvironment("Tasks__SampleSubmission__BaseUrl", generator.GetEndpoint("http"))
-    .WaitFor(generator);
+    .WithEnvironment("Tasks__ForwardPending__BaseUrl", ingest.GetEndpoint("http"))
+    .WaitFor(generator)
+    .WaitFor(ingest);
 
 builder.AddProject<Projects.EnterpriseSearch>("ui")
     .WithHttpHealthCheck("/health");
 
 // Standalone Blazor WebAssembly app served by the WebAssembly dev server. It runs in the browser, so it has no
-// service defaults (server-side telemetry/health checks); Aspire just starts it and links to it.
-builder.AddProject<Projects.InboxMock>("inbox-ui");
+// service defaults (server-side telemetry/health checks). It reads the ingest API URL from its wwwroot/appsettings.json.
+var inboxUi = builder.AddProject<Projects.InboxMock>("inbox-ui")
+    .WaitFor(ingest);
+
+// The inbox runs in the browser on its own origin and calls the ingest API (HTTP + SignalR), so ingest must allow it.
+ingest.WithEnvironment("Inbox__AllowedOrigins__0", inboxUi.GetEndpoint("http"));
 
 builder.Build().Run();

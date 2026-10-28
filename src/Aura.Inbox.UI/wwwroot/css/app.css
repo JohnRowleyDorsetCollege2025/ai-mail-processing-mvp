@@ -44,9 +44,35 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .from { display: flex; align-items: center; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
 .from .badge { margin-left: auto; }
 .email { color: var(--muted); }
-.body { padding: 24px 0; line-height: 1.6; max-width: 70ch; }
+.body { padding: 24px 0; line-height: 1.6; max-width: 70ch; white-space: pre-wrap; }
 .meta { color: var(--muted); font-size: 12px; font-family: Consolas, monospace; }
 .empty { color: var(--muted); padding: 32px; text-align: center; }
+.muted { color: var(--muted); }
+
+.live { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 9px 10px; font-size: 12px; }
+.live .dot { background: #8b93a3; }
+.live-live .dot { background: #4cc38a; box-shadow: 0 0 0 3px rgba(76,195,138,.25); }
+.live-reconnecting .dot, .live-connecting .dot { background: #f2b84b; }
+.live-offline .dot { background: #f07167; }
+
+.row.arrived { animation: arrived 2s ease-out; }
+@keyframes arrived { from { background: var(--processed-bg); } to { background: transparent; } }
+
+.notice { margin: 16px 0 0; padding: 10px 12px; border-radius: 6px; }
+.notice-failed { color: var(--failed); background: var(--failed-bg); }
+.ctp-panel { margin: 16px 0 0; border: 1px solid var(--border); border-radius: 6px; background: #f8f9fb; overflow: hidden; }
+.ctp-header { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--border); }
+.ctp-title { font-weight: 600; margin-right: auto; }
+.ctp-copy { font-size: 12px; color: var(--accent); padding: 4px 8px; border-radius: 4px; }
+.ctp-copy:hover { background: var(--accent-soft); }
+.toggle { display: inline-flex; padding: 2px; border-radius: 6px; background: var(--border); }
+.toggle button { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px; color: var(--muted); }
+.toggle button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+.ctp { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; padding: 12px 14px; }
+.ctp-json { margin: 0; padding: 12px 14px; max-height: 420px; overflow: auto; font: 12px/1.5 Consolas, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-word; background: var(--panel); }
+.ctp dt { color: var(--muted); } .ctp dd { margin: 0; }
+.attachments { list-style: none; padding: 0; margin: 0 0 20px; display: flex; flex-wrap: wrap; gap: 8px; }
+.attachments li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 
 #blazor-error-ui { display: none; position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 16px; background: var(--failed-bg); color: var(--failed); z-index: 10; }
 #blazor-error-ui .dismiss { cursor: pointer; float: right; }

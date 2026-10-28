@@ -121,11 +121,47 @@ public sealed class SubmissionStore(SubmissionDbContext db, TimeProvider timePro
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>Oldest pending submissions first, tracked so their status can be updated as they are forwarded.</summary>
+    public async Task<List<StoredSubmission>> GetPendingAsync(int take, CancellationToken ct) =>
+        await db.Submissions
+            .Where(s => s.Status == SubmissionStatus.Pending)
+            .OrderBy(s => s.StoredAtUtc)
+            .Take(take)
+            .ToListAsync(ct);
+
+    public Task<int> CountPendingAsync(CancellationToken ct) =>
+        db.Submissions.CountAsync(s => s.Status == SubmissionStatus.Pending, ct);
+
+    /// <summary>A temporary failure: the submission stays Pending (to be retried) with the error recorded.</summary>
+    public async Task RecordRetryableErrorAsync(StoredSubmission submission, string error, CancellationToken ct)
+    {
+        submission.Error = error;
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task MarkFailedAsync(StoredSubmission submission, string error, CancellationToken ct)
     {
         submission.Status = SubmissionStatus.Failed;
         submission.Error = error;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Most recent submissions as inbox rows (without the raw .eml, which is never loaded here).</summary>
+    public async Task<IReadOnlyList<InboxMessage>> ListInboxAsync(int take, CancellationToken ct)
+    {
+        var rows = await db.Submissions.AsNoTracking()
+            .OrderByDescending(s => s.StoredAtUtc)
+            .Take(take)
+            .Select(s => new StoredSubmission
+            {
+                SubmissionId = s.SubmissionId, Mailbox = s.Mailbox, From = s.From, Subject = s.Subject,
+                ReceivedOn = s.ReceivedOn, AttachmentCount = s.AttachmentCount, AttachmentNames = s.AttachmentNames,
+                Content = s.Content, RawEml = Array.Empty<byte>(), StoredAtUtc = s.StoredAtUtc,
+                Status = s.Status, ForwardedAtUtc = s.ForwardedAtUtc, Error = s.Error, AIResponse = s.AIResponse,
+            })
+            .ToListAsync(ct);
+
+        return rows.Select(Inbox.InboxMapper.ToInboxMessage).ToList();
     }
 
     public async Task<IReadOnlyList<StoredSubmissionSummary>> ListAsync(SubmissionStatus? status, int take, CancellationToken ct)

@@ -21,7 +21,8 @@ public sealed partial class EmlSubmissionParser
         Stream eml,
         string mailbox,
         IReadOnlyList<string> agentIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? submissionId = null)
     {
         MimeMessage message;
         try
@@ -38,7 +39,8 @@ public sealed partial class EmlSubmissionParser
             throw new InvalidEmlException("The uploaded file does not contain any message headers or body.");
         }
 
-        var submissionId = Guid.NewGuid().ToString();
+        // A stored email is re-parsed when it is forwarded later; it keeps the id it was given on arrival.
+        submissionId ??= Guid.NewGuid().ToString();
         var receivedOn = FormatUtc(message.Date == DateTimeOffset.MinValue ? _timeProvider.GetUtcNow() : message.Date);
         var documents = ExtractAttachments(message, cancellationToken);
 

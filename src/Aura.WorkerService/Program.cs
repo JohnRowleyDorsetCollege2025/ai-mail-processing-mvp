@@ -9,4 +9,8 @@ builder.Services.AddOptions<SampleSubmissionOptions>().BindConfiguration(SampleS
 builder.Services.AddHttpClient(SampleSubmissionTask.HttpClientName);
 builder.Services.AddHostedService<SampleSubmissionTask>();
 
+builder.Services.AddOptions<ForwardPendingOptions>().BindConfiguration(ForwardPendingOptions.SectionName);
+ForwardPendingTask.AddHttpClient(builder.Services);
+builder.Services.AddHostedService<ForwardPendingTask>();
+
 builder.Build().Run();

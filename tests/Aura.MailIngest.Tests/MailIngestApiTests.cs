@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Aura.Contracts;
 using Aura.MailIngest.Api;
+using Aura.MailIngest.Api.Forwarding;
 using Aura.MailIngest.Api.Storage;
 using Aura.SampleMailGenerator.Api;
 using Aura.SampleMailGenerator.Api.Attachments;
@@ -20,7 +21,21 @@ public class MailIngestApiTests : IDisposable
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aura-ingest-tests-{Guid.NewGuid():N}.db");
 
     [Fact]
-    public async Task Multipart_upload_is_parsed_and_forwarded_to_ai_receiver()
+    public async Task Upload_is_stored_as_pending_and_not_sent_to_the_ai()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.Accepted);
+        using var client = CreateClient(receiver);
+
+        var response = await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal("Pending", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetString());
+        Assert.Empty(receiver.Bodies);
+        Assert.Equal(SubmissionStatus.Pending, Assert.Single((await ListAsync(client))).Status);
+    }
+
+    [Fact]
+    public async Task Forward_sends_the_payload_in_the_ai_wire_format()
     {
         var receiver = new StubReceiver(HttpStatusCode.Accepted);
         using var client = CreateClient(receiver);
@@ -30,14 +45,13 @@ public class MailIngestApiTests : IDisposable
         file.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
         form.Add(file, "file", "submission.eml");
         form.Add(new StringContent("property"), "mailbox");
+        await client.PostAsync("/api/submissions", form);
 
-        var response = await client.PostAsync("/api/submissions", form);
+        var run = await ForwardAsync(client);
 
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        Assert.NotNull(receiver.Body);
-
+        Assert.Equal(1, run.Accepted);
         // Assert on the raw JSON so the wire format matches data/sample_ai_payload.json, not just our C# model.
-        using var json = JsonDocument.Parse(receiver.Body);
+        using var json = JsonDocument.Parse(Assert.Single(receiver.Bodies));
         var root = json.RootElement;
         Assert.Equal(["agent_ids", "content", "context", "attached_documents", "async_processing"],
             root.EnumerateObject().Select(p => p.Name));
@@ -49,32 +63,108 @@ public class MailIngestApiTests : IDisposable
     }
 
     [Fact]
-    public async Task Raw_rfc822_body_is_accepted_by_preview_without_forwarding()
+    public async Task Forwarded_payload_keeps_the_id_and_content_from_arrival()
     {
         var receiver = new StubReceiver(HttpStatusCode.Accepted);
         using var client = CreateClient(receiver);
-        var content = new ByteArrayContent(GenerateEml());
-        content.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
+        var preview = await (await client.PostAsync("/api/submissions/preview", RawEml(GenerateEml()))).Content.ReadFromJsonAsync<AiSubmissionPayload>();
+        var submissionId = await UploadAsync(client, GenerateEml());
 
-        var response = await client.PostAsync("/api/submissions/preview", content);
+        await ForwardAsync(client);
+
+        var sent = JsonSerializer.Deserialize<AiSubmissionPayload>(Assert.Single(receiver.Bodies))!;
+        var stored = (await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{submissionId}", JsonOptions))!;
+        Assert.Equal(submissionId, sent.Context.SubmissionId);
+        Assert.Equal(stored.Content, sent.Content);
+        Assert.Equal(preview!.AttachedDocuments.Select(d => d.Content), sent.AttachedDocuments.Select(d => d.Content));
+    }
+
+    [Fact]
+    public async Task Forward_sends_oldest_first_and_at_most_max_per_run()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.Accepted);
+        using var client = CreateClient(receiver);
+        var ids = new List<string>();
+        for (var seed = 1; seed <= 3; seed++)
+        {
+            ids.Add(await UploadAsync(client, GenerateEml(seed)));
+        }
+
+        var first = await ForwardAsync(client, max: 2);
+        var second = await ForwardAsync(client, max: 2);
+        var third = await ForwardAsync(client, max: 2);
+
+        Assert.Equal((2, 1), (first.Accepted, first.RemainingPending));
+        Assert.Equal((1, 0), (second.Accepted, second.RemainingPending));
+        Assert.Empty(third.Results);
+        Assert.Equal(ids, receiver.Bodies.Select(b => JsonDocument.Parse(b).RootElement.GetProperty("context").GetProperty("submissionId").GetString()));
+    }
+
+    [Fact]
+    public async Task Server_error_keeps_submission_pending_and_stops_the_run()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.InternalServerError);
+        using var client = CreateClient(receiver);
+        await UploadAsync(client, GenerateEml(1));
+        await UploadAsync(client, GenerateEml(2));
+
+        var run = await ForwardAsync(client);
+
+        Assert.Equal((0, 0, 1, 2, true), (run.Accepted, run.Failed, run.Retry, run.RemainingPending, run.StoppedEarly));
+        Assert.Single(receiver.Bodies); // the second was not attempted
+        var pending = await ListAsync(client, "?status=Pending");
+        Assert.Equal(2, pending.Count);
+        Assert.Contains(pending, s => s.Error?.Contains("500") == true);
+    }
+
+    [Fact]
+    public async Task Rejected_submission_is_failed_and_the_run_continues()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.BadRequest);
+        using var client = CreateClient(receiver);
+        await UploadAsync(client, GenerateEml(1));
+        await UploadAsync(client, GenerateEml(2));
+
+        var run = await ForwardAsync(client);
+
+        Assert.Equal((2, 0, 0), (run.Failed, run.Retry, run.RemainingPending));
+        var failed = await ListAsync(client, "?status=Failed");
+        Assert.All(failed, s => Assert.Contains("400", s.Error));
+        var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{failed[0].SubmissionId}", JsonOptions);
+        Assert.Null(detail!.AiResponse);
+    }
+
+    [Fact]
+    public async Task Concurrent_forward_run_is_refused()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.Accepted) { Hold = new TaskCompletionSource() };
+        using var client = CreateClient(receiver);
+        await UploadAsync(client, GenerateEml());
+
+        var firstRun = client.PostAsync("/api/submissions/forward", null);
+        await receiver.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var second = await client.PostAsync("/api/submissions/forward", null);
+        receiver.Hold.SetResult();
+        var first = await firstRun;
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Single(receiver.Bodies);
+    }
+
+    [Fact]
+    public async Task Raw_rfc822_body_is_accepted_by_preview_without_storing()
+    {
+        var receiver = new StubReceiver(HttpStatusCode.Accepted);
+        using var client = CreateClient(receiver);
+
+        var response = await client.PostAsync("/api/submissions/preview", RawEml(GenerateEml()));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<AiSubmissionPayload>();
         Assert.Equal("traded", payload!.Context.Mailbox);
         Assert.Equal(1, payload.Context.AttachmentCount);
-        Assert.Null(receiver.Body);
-    }
-
-    [Fact]
-    public async Task Receiver_failure_returns_bad_gateway()
-    {
-        using var client = CreateClient(new StubReceiver(HttpStatusCode.InternalServerError));
-        var content = new ByteArrayContent(GenerateEml());
-        content.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
-
-        var response = await client.PostAsync("/api/submissions", content);
-
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Empty(receiver.Bodies);
     }
 
     [Fact]
@@ -88,16 +178,15 @@ public class MailIngestApiTests : IDisposable
     }
 
     [Fact]
-    public async Task Forwarded_submission_is_stored_and_original_eml_is_downloadable()
+    public async Task Forwarded_submission_stores_ai_response_and_original_eml_is_downloadable()
     {
         using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
         var eml = GenerateEml();
+        var submissionId = await UploadAsync(client, eml);
 
-        var response = await client.PostAsync("/api/submissions", RawEml(eml));
-        var submissionId = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("submissionId").GetString();
+        await ForwardAsync(client);
 
-        var list = await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions);
-        var stored = Assert.Single(list!);
+        var stored = Assert.Single(await ListAsync(client));
         Assert.Equal(submissionId, stored.SubmissionId);
         Assert.Equal(SubmissionStatus.Accepted, stored.Status);
         Assert.NotNull(stored.ForwardedAtUtc);
@@ -107,22 +196,11 @@ public class MailIngestApiTests : IDisposable
         var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{submissionId}", JsonOptions);
         Assert.StartsWith("SUBMISSION\n", detail!.Content);
         Assert.Equal(submissionId, detail.AiResponse!.SubmissionId);
-        Assert.Equal(new AiCtpModel { BrokerName = "Test Brokers", BrokerId = "BRK-1", OccupationCode = "55.10", Appetite = "Refer" }, detail.AiResponse.Ctp);
+        var ctp = detail.AiResponse.Ctp!;
+        Assert.Equal(("Test Broker", "DN0000001", "BB06", "A = Not Declined"), (ctp.BrokerName, ctp.AgencyCode, ctp.OccupationCode, ctp.Appetite));
+        Assert.Equal(["EL", "PL"], ctp.Covers);
 
         Assert.Equal(eml, await client.GetByteArrayAsync($"/api/submissions/{submissionId}/eml"));
-    }
-
-    [Fact]
-    public async Task Failed_forward_is_stored_with_error()
-    {
-        using var client = CreateClient(new StubReceiver(HttpStatusCode.InternalServerError));
-        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
-
-        var failed = await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions?status=Failed", JsonOptions);
-        var stored = Assert.Single(failed!);
-        Assert.Equal(SubmissionStatus.Failed, stored.Status);
-        Assert.Contains("500", stored.Error);
-        Assert.Empty((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions?status=Accepted", JsonOptions))!);
     }
 
     [Fact]
@@ -131,38 +209,9 @@ public class MailIngestApiTests : IDisposable
         using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
         await client.PostAsync("/api/submissions/preview", RawEml(GenerateEml()));
 
-        Assert.Empty((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!);
+        Assert.Empty(await ListAsync(client));
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/submissions/does-not-exist")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/submissions/does-not-exist/eml")).StatusCode);
-    }
-
-    public void Dispose()
-    {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        File.Delete(_databasePath);
-    }
-
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
-    };
-
-    private static ByteArrayContent RawEml(byte[] eml)
-    {
-        var content = new ByteArrayContent(eml);
-        content.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
-        return content;
-    }
-
-    [Fact]
-    public async Task Failed_forward_has_no_ai_response()
-    {
-        using var client = CreateClient(new StubReceiver(HttpStatusCode.InternalServerError));
-        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
-
-        var stored = Assert.Single((await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!);
-        var detail = await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{stored.SubmissionId}", JsonOptions);
-        Assert.Null(detail!.AiResponse);
     }
 
     [Fact]
@@ -185,14 +234,48 @@ public class MailIngestApiTests : IDisposable
         }
 
         using var client = CreateClient(new StubReceiver(HttpStatusCode.Accepted));
-        await client.PostAsync("/api/submissions", RawEml(GenerateEml()));
+        var newId = await UploadAsync(client, GenerateEml());
+        await ForwardAsync(client);
 
-        var all = (await client.GetFromJsonAsync<List<StoredSubmissionSummary>>("/api/submissions", JsonOptions))!;
-        Assert.Equal(2, all.Count);
+        Assert.Equal(2, (await ListAsync(client)).Count);
         Assert.Null((await client.GetFromJsonAsync<StoredSubmissionDetail>("/api/submissions/old-1", JsonOptions))!.AiResponse);
-        var newest = all.Single(s => s.SubmissionId != "old-1");
-        Assert.NotNull((await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{newest.SubmissionId}", JsonOptions))!.AiResponse);
+        Assert.NotNull((await client.GetFromJsonAsync<StoredSubmissionDetail>($"/api/submissions/{newId}", JsonOptions))!.AiResponse);
     }
+
+    public void Dispose()
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        File.Delete(_databasePath);
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+    };
+
+    private static ByteArrayContent RawEml(byte[] eml)
+    {
+        var content = new ByteArrayContent(eml);
+        content.Headers.ContentType = new MediaTypeHeaderValue("message/rfc822");
+        return content;
+    }
+
+    private static async Task<string> UploadAsync(HttpClient client, byte[] eml)
+    {
+        var response = await client.PostAsync("/api/submissions", RawEml(eml));
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("submissionId").GetString()!;
+    }
+
+    private static async Task<ForwardRunResult> ForwardAsync(HttpClient client, int max = 5)
+    {
+        var response = await client.PostAsync($"/api/submissions/forward?max={max}", null);
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<ForwardRunResult>(JsonOptions))!;
+    }
+
+    private static async Task<List<StoredSubmissionSummary>> ListAsync(HttpClient client, string query = "") =>
+        (await client.GetFromJsonAsync<List<StoredSubmissionSummary>>($"/api/submissions{query}", JsonOptions))!;
 
     private HttpClient CreateClient(StubReceiver receiver)
     {
@@ -205,9 +288,9 @@ public class MailIngestApiTests : IDisposable
         return factory.CreateClient();
     }
 
-    private static byte[] GenerateEml()
+    private static byte[] GenerateEml(int seed = 7)
     {
-        var scenario = new ScenarioGenerator(TimeProvider.System).Generate(new ScenarioRequest { Seed = 7 });
+        var scenario = new ScenarioGenerator(TimeProvider.System).Generate(new ScenarioRequest { Seed = seed });
         var message = new SampleEmailBuilder([new SubmissionPdfGenerator()], TimeProvider.System).Build(scenario);
         using var stream = new MemoryStream();
         message.WriteTo(stream);
@@ -216,18 +299,33 @@ public class MailIngestApiTests : IDisposable
 
     private sealed class StubReceiver(HttpStatusCode status) : HttpMessageHandler
     {
-        public string? Body { get; private set; }
+        public List<string> Bodies { get; } = [];
+
+        /// <summary>When set, each request waits for it to complete, so a forwarding run can be held open.</summary>
+        public TaskCompletionSource? Hold { get; init; }
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            using var doc = JsonDocument.Parse(Body);
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            lock (Bodies)
+            {
+                Bodies.Add(body);
+            }
+            Started.TrySetResult();
+            if (Hold is not null)
+            {
+                await Hold.Task;
+            }
+
+            using var doc = JsonDocument.Parse(body);
             var ack = new AiSubmissionAcknowledgement
             {
                 SubmissionId = doc.RootElement.GetProperty("context").GetProperty("submissionId").GetString()!,
                 Status = "accepted",
                 ReceivedAt = DateTimeOffset.UtcNow,
-                Ctp = new AiCtpModel { BrokerName = "Test Brokers", BrokerId = "BRK-1", OccupationCode = "55.10", Appetite = "Refer" },
+                Ctp = new AiCtpModel { BrokerName = "Test Broker", AgencyCode = "DN0000001", OccupationCode = "BB06", Appetite = "A = Not Declined", Covers = ["EL", "PL"] },
             };
             return new HttpResponseMessage(status) { Content = JsonContent.Create(ack) };
         }

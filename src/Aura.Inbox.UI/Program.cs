@@ -6,8 +6,12 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
+// The inbox reads from Aura.MailIngest.Api (wwwroot/appsettings.json). The API must allow this app's origin
+// in its Inbox:AllowedOrigins setting.
+var ingestUrl = new Uri(builder.Configuration["MailIngest:BaseUrl"] ?? "http://localhost:5100");
+builder.Services.AddSingleton(new HttpClient { BaseAddress = ingestUrl });
 
-builder.Services.AddScoped<InboxMock.Services.MessageService>();
+// Singleton: one SignalR connection for the lifetime of the browser tab.
+builder.Services.AddSingleton<InboxMock.Services.MessageService>();
 
 await builder.Build().RunAsync();

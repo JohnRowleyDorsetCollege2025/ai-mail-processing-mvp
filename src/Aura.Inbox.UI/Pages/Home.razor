@@ -2,7 +2,11 @@
 @using InboxMock.Components
 @using InboxMock.Models
 @using InboxMock.Services
+@using System.Text.Encodings.Web
+@using System.Text.Json
+@implements IDisposable
 @inject MessageService Messages
+@inject IJSRuntime JS
 
 <PageTitle>Inbox</PageTitle>
 
@@ -20,6 +24,10 @@
                 <span class="count">@all.Count(m => m.Status == s)</span>
             </button>
         }
+        <div class="live live-@liveState.ToString().ToLowerInvariant()" title="Connection to the mail ingest API">
+            <span class="dot"></span>
+            <span>@LiveLabel</span>
+        </div>
     </nav>
 
     <section class="list">
@@ -39,7 +47,7 @@
         {
             @foreach (var m in visible)
             {
-                <button class="row @(m.Id == selected?.Id ? "selected" : "")" @onclick="() => selected = m">
+                <button @key="m.Id" class="row @(m.Id == selected?.Id ? "selected" : "") @(m.Id == lastArrivedId ? "arrived" : "")" @onclick="() => selected = m">
                     <span class="avatar">@Initials(m.SenderName)</span>
                     <span class="row-main">
                         <span class="row-top">
@@ -67,13 +75,63 @@
                     <span class="avatar large">@Initials(selected.SenderName)</span>
                     <div>
                         <div class="sender">@selected.SenderName</div>
-                        <div class="email">&lt;@selected.SenderEmail&gt;</div>
+                        <div class="email">&lt;@selected.SenderEmail&gt; · @FormatReceived(selected.ReceivedOn)</div>
                     </div>
                     <StatusBadge Status="selected.Status" />
                 </div>
             </header>
+
+            @if (selected.Error is not null)
+            {
+                <p class="notice notice-failed">@selected.Error</p>
+            }
+
+            @if (selected.Ctp is { } ctp)
+            {
+                <section class="ctp-panel">
+                    <div class="ctp-header">
+                        <span class="ctp-title">AI result</span>
+                        @if (showJson)
+                        {
+                            <button class="ctp-copy" @onclick="() => CopyAsync(ctp)">@(copied ? "Copied" : "Copy")</button>
+                        }
+                        <div class="toggle" role="group" aria-label="AI result view">
+                            <button aria-pressed="@(!showJson)" class="@(showJson ? "" : "on")" @onclick="() => showJson = false">Details</button>
+                            <button aria-pressed="@showJson" class="@(showJson ? "on" : "")" @onclick="() => showJson = true">JSON</button>
+                        </div>
+                    </div>
+
+                    @if (showJson)
+                    {
+                        <pre class="ctp-json">@ToJson(ctp)</pre>
+                    }
+                    else
+                    {
+                        <dl class="ctp">
+                            <dt>Customer</dt><dd>@(ctp.CustomerName ?? "–")</dd>
+                            <dt>Broker</dt><dd>@(ctp.BrokerName ?? "–") <span class="muted">@ctp.AgencyCode</span></dd>
+                            <dt>Occupation</dt><dd>@(ctp.OccupationCode ?? "–") <span class="muted">@ctp.BusinessDescription</span></dd>
+                            <dt>Inception</dt><dd>@(ctp.InceptionDate?.ToString("d MMM yyyy") ?? "–")</dd>
+                            <dt>Current insurer</dt><dd>@(ctp.HoldingInsurerName ?? "–")</dd>
+                            <dt>Covers</dt><dd>@(ctp.Covers is { Count: > 0 } covers ? string.Join(", ", covers) : "–")</dd>
+                            <dt>Appetite</dt><dd>@(ctp.Appetite ?? "–")</dd>
+                        </dl>
+                    }
+                </section>
+            }
+
             <div class="body">@selected.Body</div>
-            <footer class="meta">Message ID: @selected.Id</footer>
+
+            @if (selected.AttachmentNames.Count > 0)
+            {
+                <ul class="attachments">
+                    @foreach (var name in selected.AttachmentNames)
+                    {
+                        <li>📎 @name</li>
+                    }
+                </ul>
+            }
+            <footer class="meta">Submission ID: @selected.Id</footer>
         }
     </article>
 </div>
@@ -84,15 +142,118 @@
     ProcessingStatus? filter;
     bool loading = true;
     string? error;
+    LiveState liveState;
+    string? lastArrivedId;
+
+    // Details/JSON view of the AI result. Kept when moving between emails, so a run of emails can be compared as JSON.
+    bool showJson;
+    bool copied;
+
+    // The full CTP payload exactly as the AI returned it (including nulls), readable: indented, € and fadas unescaped.
+    static readonly JsonSerializerOptions DisplayJson = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    static string ToJson(Aura.Contracts.AiCtpModel ctp) => JsonSerializer.Serialize(ctp, DisplayJson);
+
+    async Task CopyAsync(Aura.Contracts.AiCtpModel ctp)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", ToJson(ctp));
+            copied = true;
+            StateHasChanged();
+            await Task.Delay(1500);
+            copied = false;
+        }
+        catch (JSException)
+        {
+            // Clipboard access can be refused (e.g. page not focused); the JSON is still selectable.
+        }
+    }
 
     IEnumerable<EmailMessage> visible => all.Where(m => filter is null || m.Status == filter);
 
+    string LiveLabel => liveState switch
+    {
+        LiveState.Live => "Live",
+        LiveState.Reconnecting => "Reconnecting…",
+        LiveState.Offline => "Offline – retrying",
+        _ => "Connecting…",
+    };
+
     protected override async Task OnInitializedAsync()
     {
-        try { all = await Messages.GetMessagesAsync() ?? []; }
-        catch (Exception ex) { error = $"Could not load messages: {ex.Message}"; }
+        liveState = Messages.State;
+        Messages.MessageUpserted += OnMessageUpserted;
+        Messages.Reconnected += OnReconnected;
+        Messages.StateChanged += OnStateChanged;
+
+        await LoadAsync();
+        _ = Messages.StartLiveUpdatesAsync();
+    }
+
+    async Task LoadAsync()
+    {
+        try
+        {
+            var messages = await Messages.GetMessagesAsync();
+
+            // Keep anything pushed while the list was loading.
+            foreach (var pushed in all.Where(p => messages.All(m => m.Id != p.Id)))
+            {
+                messages.Insert(0, pushed);
+            }
+            all = messages;
+            selected = selected is null ? null : all.FirstOrDefault(m => m.Id == selected.Id);
+            error = null;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not load messages from the mail ingest API: {ex.Message}";
+        }
         loading = false;
     }
+
+    Task OnMessageUpserted(EmailMessage message) => InvokeAsync(() =>
+    {
+        var index = all.FindIndex(m => m.Id == message.Id);
+        if (index >= 0)
+        {
+            all[index] = message;
+        }
+        else
+        {
+            all.Insert(0, message);
+            lastArrivedId = message.Id;
+        }
+
+        if (selected?.Id == message.Id)
+        {
+            selected = message;
+        }
+        StateHasChanged();
+    });
+
+    Task OnReconnected() => InvokeAsync(async () =>
+    {
+        await LoadAsync();
+        StateHasChanged();
+    });
+
+    Task OnStateChanged(LiveState state) => InvokeAsync(() =>
+    {
+        liveState = state;
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        Messages.MessageUpserted -= OnMessageUpserted;
+        Messages.Reconnected -= OnReconnected;
+        Messages.StateChanged -= OnStateChanged;
+    }
+
+    static string FormatReceived(string receivedOn) =>
+        DateTimeOffset.TryParse(receivedOn, out var value) ? value.ToLocalTime().ToString("d MMM yyyy HH:mm") : receivedOn;
 
     static string Initials(string name) =>
         string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
